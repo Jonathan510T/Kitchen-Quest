@@ -26,6 +26,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+def make_tablecloth_tile() -> QPixmap:
+    # Red and beige gingham tablecloth tile.
+    size, half = 48, 24
+    tile = QPixmap(size, size)
+    tile.fill(QColor("#f6ecd6"))
+    p = QPainter(tile)
+    stripe = QColor(200, 54, 43, 48)
+    p.fillRect(0, 0, half, size, stripe)   
+    p.fillRect(0, 0, size, half, stripe)   
+    p.end()
+    return tile
+
 class LoginWindow(QWidget):
     login_succeeded = Signal(str, str)  # username, role
 
@@ -33,15 +45,19 @@ class LoginWindow(QWidget):
         super().__init__()
         self.setObjectName("root")
         self.setWindowTitle("Sign in")
+        self._tile = make_tablecloth_tile()
         self.setMinimumSize(480, 740)
         self._settings = QSettings("KitchenQuest", "KitchenLogin")
 
         self._build_ui()
 
+    def paintEvent(self, event):
+            painter = QPainter(self)
+            painter.drawTiledPixmap(self.rect(), self._tile)
+
 # UI construction
     def _build_ui(self):
         outer = QVBoxLayout(self)
-
 
 def main():
     app = QApplication(sys.argv)
