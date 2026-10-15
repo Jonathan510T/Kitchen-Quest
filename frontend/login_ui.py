@@ -37,10 +37,12 @@ RED = "#c8362b"  # brand red
 SERIF = '"Georgia", "Palatino Linotype", "Times New Roman", serif'
 
 USER = "user"
+ADMIN = "admin"
 
 ROLE_CONFIG = {
     USER: {
         "emoji": "🍳",
+        "segment": "User",
         "accent": RED,
         "accent_hover": "#b02d23",
         "accent_pressed": "#96251c",
@@ -49,8 +51,23 @@ ROLE_CONFIG = {
         "title": "Welcome to the kitchen!",
         "subtitle": "Sign in to start cooking",
         "button": "Sign in",
+        "show_signup": True,
+    },
+    ADMIN: {
+        "emoji": "👨‍🍳",
+        "segment": "Admin",
+        "accent": "#8f1f1a",
+        "accent_hover": "#781915",
+        "accent_pressed": "#611310",
+        "accent_disabled": "#c58a87",
+        "badge_bg": "#f1d9c4",
+        "title": "Head chef's office",
+        "subtitle": "Sign in to manage the kitchen",
+        "button": "Sign in as admin",
+        "show_signup": False,
     },
 }
+
 
 # fake authentication for testing purposes
 FAKE_DB = {
@@ -231,6 +248,27 @@ class LoginWindow(QWidget):
         layout.setContentsMargins(32, 28, 32, 26)
         layout.setSpacing(6)
 
+        # Role switch (segmented control)
+        segment = QFrame()
+        segment.setObjectName("segment")
+        seg_layout = QHBoxLayout(segment)
+        seg_layout.setContentsMargins(4, 4, 4, 4)
+        seg_layout.setSpacing(4)
+
+        self.user_btn = self._segment_button(ROLE_CONFIG[USER]["segment"])
+        self.admin_btn = self._segment_button(ROLE_CONFIG[ADMIN]["segment"])
+        self.role_group = QButtonGroup(self)
+        self.role_group.setExclusive(True)
+        self.role_group.addButton(self.user_btn)
+        self.role_group.addButton(self.admin_btn)
+        self.user_btn.setChecked(True)
+        self.user_btn.clicked.connect(lambda: self._on_role_clicked(USER))
+        self.admin_btn.clicked.connect(lambda: self._on_role_clicked(ADMIN))
+        seg_layout.addWidget(self.user_btn)
+        seg_layout.addWidget(self.admin_btn)
+        layout.addWidget(segment)
+        layout.addSpacing(16)
+
         # Badge + heading
         self.badge = QLabel()
         self.badge.setObjectName("badge")
@@ -298,6 +336,22 @@ class LoginWindow(QWidget):
         layout.addSpacing(8)
         layout.addWidget(self.login_btn)
 
+        # Sign-up row (users only)
+        self.signup_row = QWidget()
+        signup_layout = QHBoxLayout(self.signup_row)
+        signup_layout.setContentsMargins(0, 10, 0, 0)
+        signup_layout.addStretch()
+        muted = QLabel("New to the kitchen?")
+        muted.setObjectName("muted")
+        signup_layout.addWidget(muted)
+        signup = QPushButton("Create an account")
+        signup.setObjectName("link")
+        signup.setCursor(Qt.CursorShape.PointingHandCursor)
+        signup.clicked.connect(self._on_signup)
+        signup_layout.addWidget(signup)
+        signup_layout.addStretch()
+        layout.addWidget(self.signup_row)
+
         outer.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
         outer.addStretch()
 
@@ -308,19 +362,48 @@ class LoginWindow(QWidget):
         self.password.textChanged.connect(self._clear_error)  
 
     @staticmethod
+    def _segment_button(text: str) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName("segBtn")
+        btn.setCheckable(True)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        return btn
+
+    @staticmethod
     def _field_label(text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setObjectName("fieldLabel")
         return lbl
 
+   # role switch
+    def _on_role_clicked(self, role: str):
+        if role != self.role:
+            self._apply_role(role)
+
     # apply the role-specific configuration to the UI
     def _apply_role(self, role: str):
+        if self._worker is not None:  
+            (self.user_btn if self.role == USER else self.admin_btn).setChecked(True)
+            return
+
+        self.role = role
         cfg = ROLE_CONFIG[role]
         self.setStyleSheet(build_style(role))
         self.badge.setText(cfg["emoji"])
         self.title.setText(cfg["title"])
         self.subtitle.setText(cfg["subtitle"])
         self.login_btn.setText(cfg["button"])
+        self.signup_row.setVisible(cfg["show_signup"])
+        self.setWindowTitle("Admin sign in" if role == ADMIN else "Sign in")
+
+        # Each role has its own fields, remembered username and error state
+        self.password.clear()
+        self.show_pw.setChecked(False)
+        self._clear_error()
+        saved = self._settings.value(f"{role}/username", "", type=str)
+        self.username.setText(saved)
+        self.remember.setChecked(bool(saved))
+        (self.password if saved else self.username).setFocus()
 
     def _toggle_password(self, checked: bool):
         self.password.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password)
@@ -383,6 +466,9 @@ class LoginWindow(QWidget):
 
     def _on_forgot(self):
         self.error_label.setText("Password reset not set up yet (?)")
+
+    def _on_signup(self):
+        self.error_label.setText("Sign-up not set up yet (?)")
 
     def closeEvent(self, event):
         if self._worker is not None:
