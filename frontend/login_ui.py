@@ -160,6 +160,26 @@ QPushButton#link {{
 QPushButton#link:hover {{ text-decoration: underline; }}
 """
 
+PAGE_STYLE = f"""
+QMainWindow, QWidget#page {{ background: {BEIGE}; }}
+QLabel#welcome {{
+    font-family: {SERIF};
+    font-size: 26px;
+    font-weight: 700;
+    color: {RED};
+}}
+QListWidget {{
+    background: {CREAM};
+    border: 2px solid {BEIGE_DARK};
+    border-radius: 12px;
+    padding: 6px;
+    font-size: 14px;
+    color: {BROWN};
+}}
+QListWidget::item {{ padding: 10px; border-radius: 8px; }}
+QListWidget::item:selected {{ background: {RED}; color: white; }}
+"""
+
 def make_tablecloth_tile() -> QPixmap:
     # Red and beige gingham tablecloth tile.
     size, half = 48, 24
@@ -369,12 +389,31 @@ class LoginWindow(QWidget):
             self._worker.wait(2000)
         super().closeEvent(event)
 
+# temporary user window to show login success
+class UserWindow(QMainWindow):
+    def __init__(self, username: str):
+        super().__init__()
+        self.setWindowTitle("Kitchen")
+        self.resize(700, 450)
+        self.setStyleSheet(PAGE_STYLE)
+        label = QLabel(f"Hello, {username}!")
+        label.setObjectName("welcome")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCentralWidget(label)
+
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
     login = LoginWindow()
-    login.login_succeeded.connect(lambda username: print(f"Logged in as {username}"))
+    windows = {}
+
+    def open_main(username: str):
+        windows["main"] = UserWindow(username)
+        windows["main"].show()
+        login.close()
+
+    login.login_succeeded.connect(open_main)
     login.show()
     sys.exit(app.exec())
 
