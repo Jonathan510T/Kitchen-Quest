@@ -211,6 +211,15 @@ class LoginWindow(QWidget):
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addWidget(self.password)
 
+        # Error message
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("error")
+        self.error_label.setWordWrap(True)
+        self.error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.error_label.setMinimumHeight(20)
+        layout.addSpacing(4)
+        layout.addWidget(self.error_label)
+
         # Login button
         self.login_btn = QPushButton()
         self.login_btn.setObjectName("primary")
@@ -235,6 +244,33 @@ class LoginWindow(QWidget):
         self.title.setText(cfg["title"])
         self.subtitle.setText(cfg["subtitle"])
         self.login_btn.setText(cfg["button"])
+
+    
+    def _set_invalid(self, widget: QLineEdit, invalid: bool):
+        widget.setProperty("invalid", invalid)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    def _clear_error(self):
+        self.error_label.setText("")
+        self._set_invalid(self.username, False)
+        self._set_invalid(self.password, False)
+
+    def _on_login(self):
+
+        user = self.username.text().strip()
+        pw = self.password.text()
+
+        missing = False
+        if not user:
+            self._set_invalid(self.username, True)
+            missing = True
+        if not pw:
+            self._set_invalid(self.password, True)
+            missing = True
+        if missing:
+            self.error_label.setText("Please enter both username and password.")
+            return
 
 def main():
     app = QApplication(sys.argv)
