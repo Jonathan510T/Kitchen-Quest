@@ -71,16 +71,20 @@ ROLE_CONFIG = {
 
 # fake authentication for testing purposes
 FAKE_DB = {
-    "user": {"password": "user123"},
-    "admin": {"password": "admin123"},
+    "user": {"password": "user123", "role": USER},
+    "admin": {"password": "admin123", "role": ADMIN},
 }
 
-def authenticate(username: str, password: str) -> tuple[bool, str]:
-    """Return (success, message)."""
+def authenticate(username: str, password: str, role: str) -> tuple[bool, str]:
+    # Return (success, message). role is the login tab that was used.
     time.sleep(1.0)  # simulate network latency
     record = FAKE_DB.get(username)
     if record is None or record["password"] != password:
         return False, "Invalid username or password."
+    if role == ADMIN and record["role"] != ADMIN:
+        return False, "This account does not have admin access."
+    if role == USER and record["role"] == ADMIN:
+        return False, "Administrators must sign in from the Admin tab."
     return True, "OK"
 
 class AuthWorker(QThread):
@@ -88,14 +92,14 @@ class AuthWorker(QThread):
 
     finished_auth = Signal(bool, str)
 
-    def __init__(self, username: str, password: str):
+    def __init__(self, username: str, password: str, role: str):
         super().__init__()
-        self._args = (username, password)
+        self._args = (username, password, role)
 
     def run(self):
         try:
             ok, msg = authenticate(*self._args)
-        except Exception as exc:  # network errors etc.
+        except Exception as exc:  
             ok, msg = False, f"Could not sign in: {exc}"
         self.finished_auth.emit(ok, msg)
 
@@ -210,7 +214,7 @@ def make_tablecloth_tile() -> QPixmap:
     return tile
 
 class LoginWindow(QWidget):
-    login_succeeded = Signal(str)  # username
+    login_succeeded = Signal(str, str)  # username, role
 
     def __init__(self):
         super().__init__()
@@ -426,8 +430,12 @@ class LoginWindow(QWidget):
             self.username,
             self.password,
             self.show_pw,
+            self.remember,
+            self.user_btn,
+            self.admin_btn,
         ):
             w.setEnabled(not busy)
+
 
     def _on_login(self):
         if self._worker is not None:
@@ -448,7 +456,7 @@ class LoginWindow(QWidget):
             return
 
         self._set_busy(True)
-        self._worker = AuthWorker(user, pw)
+        self._worker = AuthWorker(user, pw, self.role)
         self._worker.finished_auth.connect(self._on_auth_done)
         self._worker.start()
         
@@ -457,7 +465,7 @@ class LoginWindow(QWidget):
         self._set_busy(False)
 
         if ok:
-            self.login_succeeded.emit(self.username.text().strip())
+            self.login_succeeded.emit(self.username.text().strip(), self.role)
         else:
             self.error_label.setText(message)
             self._set_invalid(self.password, True)
