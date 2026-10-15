@@ -230,6 +230,12 @@ class LoginWindow(QWidget):
         outer.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
         outer.addStretch()
 
+        # Keyboard + validation behaviour
+        self.username.returnPressed.connect(self.password.setFocus)
+        self.password.returnPressed.connect(self._on_login)
+        self.username.textChanged.connect(self._clear_error)
+        self.password.textChanged.connect(self._clear_error)  
+
     @staticmethod
     def _field_label(text: str) -> QLabel:
         lbl = QLabel(text)
