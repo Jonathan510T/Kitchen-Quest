@@ -52,6 +52,36 @@ ROLE_CONFIG = {
     },
 }
 
+# fake authentication for testing purposes
+FAKE_DB = {
+    "user": {"password": "user123"},
+    "admin": {"password": "admin123"},
+}
+
+def authenticate(username: str, password: str) -> tuple[bool, str]:
+    """Return (success, message)."""
+    time.sleep(1.0)  # simulate network latency
+    record = FAKE_DB.get(username)
+    if record is None or record["password"] != password:
+        return False, "Invalid username or password."
+    return True, "OK"
+
+class AuthWorker(QThread):
+    """Runs authentication off the UI thread so the window never freezes."""
+
+    finished_auth = Signal(bool, str)
+
+    def __init__(self, username: str, password: str):
+        super().__init__()
+        self._args = (username, password)
+
+    def run(self):
+        try:
+            ok, msg = authenticate(*self._args)
+        except Exception as exc:  # network errors etc.
+            ok, msg = False, f"Could not sign in: {exc}"
+        self.finished_auth.emit(ok, msg)
+
 def build_style(role: str) -> str:
     c = ROLE_CONFIG[role]
     return f"""
@@ -143,7 +173,7 @@ def make_tablecloth_tile() -> QPixmap:
     return tile
 
 class LoginWindow(QWidget):
-    login_succeeded = Signal(str, str)  # username, role
+    login_succeeded = Signal(str)  # username
 
     def __init__(self):
         super().__init__()
@@ -152,6 +182,8 @@ class LoginWindow(QWidget):
         self._tile = make_tablecloth_tile()
         self.setMinimumSize(480, 740)
         self._settings = QSettings("KitchenQuest", "KitchenLogin")
+        self._worker: AuthWorker | None = None
+        self.role = USER
 
         self._build_ui()
         self._apply_role(USER)
@@ -211,6 +243,20 @@ class LoginWindow(QWidget):
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addWidget(self.password)
 
+        # Show password + forgot
+        options = QHBoxLayout()
+        self.show_pw = QCheckBox("Show password")
+        self.show_pw.toggled.connect(self._toggle_password)
+        forgot = QPushButton("Forgot password?")
+        forgot.setObjectName("link")
+        forgot.setCursor(Qt.CursorShape.PointingHandCursor)
+        forgot.clicked.connect(self._on_forgot)
+        options.addWidget(self.show_pw)
+        options.addStretch()
+        options.addWidget(forgot)
+        layout.addSpacing(4)
+        layout.addLayout(options)
+
         # Error message
         self.error_label = QLabel("")
         self.error_label.setObjectName("error")
@@ -251,7 +297,9 @@ class LoginWindow(QWidget):
         self.subtitle.setText(cfg["subtitle"])
         self.login_btn.setText(cfg["button"])
 
-    
+    def _toggle_password(self, checked: bool):
+        self.password.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password)
+
     def _set_invalid(self, widget: QLineEdit, invalid: bool):
         widget.setProperty("invalid", invalid)
         widget.style().unpolish(widget)
@@ -262,7 +310,20 @@ class LoginWindow(QWidget):
         self._set_invalid(self.username, False)
         self._set_invalid(self.password, False)
 
+    def _set_busy(self, busy: bool):
+        self.login_btn.setEnabled(not busy)
+        cfg = ROLE_CONFIG[self.role]
+        self.login_btn.setText("Warming up the stove..." if busy else cfg["button"])
+        for w in (
+            self.username,
+            self.password,
+            self.show_pw,
+        ):
+            w.setEnabled(not busy)
+
     def _on_login(self):
+        if self._worker is not None:
+            return
 
         user = self.username.text().strip()
         pw = self.password.text()
@@ -278,12 +339,37 @@ class LoginWindow(QWidget):
             self.error_label.setText("Please enter both username and password.")
             return
 
+        self._set_busy(True)
+        self._worker = AuthWorker(user, pw)
+        self._worker.finished_auth.connect(self._on_auth_done)
+        self._worker.start()
+        
+    def _on_auth_done(self, ok: bool, message: str):
+        self._worker = None
+        self._set_busy(False)
+
+        if ok:
+            self.login_succeeded.emit(self.username.text().strip())
+        else:
+            self.error_label.setText(message)
+            self._set_invalid(self.password, True)
+            self.password.selectAll()
+            self.password.setFocus()
+
+    def _on_forgot(self):
+        self.error_label.setText("Password reset not set up yet (?)")
+
+    def closeEvent(self, event):
+        if self._worker is not None:
+            self._worker.wait(2000)
+        super().closeEvent(event)
+
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
     login = LoginWindow()
-
+    login.login_succeeded.connect(lambda username: print(f"Logged in as {username}"))
     login.show()
     sys.exit(app.exec())
 
