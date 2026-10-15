@@ -257,6 +257,9 @@ class LoginWindow(QWidget):
         layout.addSpacing(4)
         layout.addLayout(options)
 
+        self.remember = QCheckBox("Remember me")
+        layout.addWidget(self.remember)
+
         # Error message
         self.error_label = QLabel("")
         self.error_label.setObjectName("error")
@@ -270,6 +273,8 @@ class LoginWindow(QWidget):
         self.login_btn = QPushButton()
         self.login_btn.setObjectName("primary")
         self.login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.login_btn.setDefault(True)
+        self.login_btn.clicked.connect(self._on_login)
         layout.addSpacing(8)
         layout.addWidget(self.login_btn)
 
