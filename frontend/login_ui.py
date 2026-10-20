@@ -1,12 +1,11 @@
-"""
-Kitchen-themed PySide6 login with separate User and Admin sign-in.
-Demo credentials:
-    User  tab:  user  / user123
-    Admin tab:  admin / admin123
-"""
+"""Kitchen-themed sign-in connected to the Kitchen Quest backend."""
 
 import sys
-import time
+
+if __package__:
+    from .api_client import ApiClient, ApiError, Profile, Session
+else:
+    from api_client import ApiClient, ApiError, Profile, Session
 
 from PySide6.QtCore import Qt, QSettings, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -69,39 +69,29 @@ ROLE_CONFIG = {
 }
 
 
-# fake authentication for testing purposes
-FAKE_DB = {
-    "user": {"password": "user123", "role": USER},
-    "admin": {"password": "admin123", "role": ADMIN},
-}
-
-def authenticate(username: str, password: str, role: str) -> tuple[bool, str]:
-    # Return (success, message). role is the login tab that was used.
-    time.sleep(1.0)  # simulate network latency
-    record = FAKE_DB.get(username)
-    if record is None or record["password"] != password:
-        return False, "Invalid username or password."
-    if role == ADMIN and record["role"] != ADMIN:
-        return False, "This account does not have admin access."
-    if role == USER and record["role"] == ADMIN:
-        return False, "Administrators must sign in from the Admin tab."
-    return True, "OK"
-
 class AuthWorker(QThread):
-    """Runs authentication off the UI thread so the window never freezes."""
+    """Keep network requests off the UI thread; consume results after finished."""
 
-    finished_auth = Signal(bool, str)
-
-    def __init__(self, username: str, password: str, role: str):
+    def __init__(self, client: ApiClient, username: str, password: str, role: str, register: bool):
         super().__init__()
+        self.client = client
         self._args = (username, password, role)
+        self.register = register
+        self.result: Session | Profile | None = None
+        self.error = ""
 
     def run(self):
         try:
-            ok, msg = authenticate(*self._args)
-        except Exception as exc:  
-            ok, msg = False, f"Could not sign in: {exc}"
-        self.finished_auth.emit(ok, msg)
+            if self.register:
+                self.result = self.client.register(*self._args[:2])
+            else:
+                self.result = self.client.login(*self._args)
+        except ApiError as exc:
+            self.error = str(exc)
+        except Exception:
+            self.error = "Could not complete the request. Please try again."
+        finally:
+            self._args = ()  # Release the password once the request completes.
 
 def build_style(role: str) -> str:
     c = ROLE_CONFIG[role]
@@ -214,9 +204,9 @@ def make_tablecloth_tile() -> QPixmap:
     return tile
 
 class LoginWindow(QWidget):
-    login_succeeded = Signal(str, str)  # username, role
+    login_succeeded = Signal(object)  # Authenticated Session, kept in memory only.
 
-    def __init__(self):
+    def __init__(self, client: ApiClient | None = None):
         super().__init__()
         self.setObjectName("root")
         self.setWindowTitle("Sign in")
@@ -224,6 +214,9 @@ class LoginWindow(QWidget):
         self.setMinimumSize(480, 740)
         self._settings = QSettings("KitchenQuest", "KitchenLogin")
         self._worker: AuthWorker | None = None
+        self.client = client or ApiClient()
+        self._registering = False
+        self._closing = False
         self.role = USER
 
         self._build_ui()
@@ -319,7 +312,7 @@ class LoginWindow(QWidget):
         layout.addSpacing(4)
         layout.addLayout(options)
 
-        self.remember = QCheckBox("Remember me")
+        self.remember = QCheckBox("Remember username")
         layout.addWidget(self.remember)
 
         # Error message
@@ -348,11 +341,11 @@ class LoginWindow(QWidget):
         muted = QLabel("New to the kitchen?")
         muted.setObjectName("muted")
         signup_layout.addWidget(muted)
-        signup = QPushButton("Create an account")
-        signup.setObjectName("link")
-        signup.setCursor(Qt.CursorShape.PointingHandCursor)
-        signup.clicked.connect(self._on_signup)
-        signup_layout.addWidget(signup)
+        self.signup = QPushButton("Create an account")
+        self.signup.setObjectName("link")
+        self.signup.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.signup.clicked.connect(self._on_signup)
+        signup_layout.addWidget(self.signup)
         signup_layout.addStretch()
         layout.addWidget(self.signup_row)
 
@@ -391,6 +384,7 @@ class LoginWindow(QWidget):
             return
 
         self.role = role
+        self._registering = False
         cfg = ROLE_CONFIG[role]
         self.setStyleSheet(build_style(role))
         self.badge.setText(cfg["emoji"])
@@ -398,6 +392,7 @@ class LoginWindow(QWidget):
         self.subtitle.setText(cfg["subtitle"])
         self.login_btn.setText(cfg["button"])
         self.signup_row.setVisible(cfg["show_signup"])
+        self.signup.setText("Create an account")
         self.setWindowTitle("Admin sign in" if role == ADMIN else "Sign in")
 
         # Each role has its own fields, remembered username and error state
@@ -425,7 +420,7 @@ class LoginWindow(QWidget):
     def _set_busy(self, busy: bool):
         self.login_btn.setEnabled(not busy)
         cfg = ROLE_CONFIG[self.role]
-        self.login_btn.setText("Warming up the stove..." if busy else cfg["button"])
+        self.login_btn.setText("Connecting..." if busy else ("Create account" if self._registering else cfg["button"]))
         for w in (
             self.username,
             self.password,
@@ -433,6 +428,7 @@ class LoginWindow(QWidget):
             self.remember,
             self.user_btn,
             self.admin_btn,
+            self.signup,
         ):
             w.setEnabled(not busy)
 
@@ -455,17 +451,38 @@ class LoginWindow(QWidget):
             self.error_label.setText("Please enter both username and password.")
             return
 
+        if self._registering and (not 3 <= len(user) <= 50 or not 8 <= len(pw) <= 128):
+            self.error_label.setText("Use a username of 3-50 characters and a password of 8-128 characters.")
+            return
+
+        self._clear_error()
         self._set_busy(True)
-        self._worker = AuthWorker(user, pw, self.role)
-        self._worker.finished_auth.connect(self._on_auth_done)
+        self._worker = AuthWorker(self.client, user, pw, self.role, self._registering)
+        self._worker.finished.connect(self._on_auth_done)
         self._worker.start()
         
-    def _on_auth_done(self, ok: bool, message: str):
+    def _on_auth_done(self):
+        worker = self._worker
+        result, message = worker.result, worker.error
         self._worker = None
+        worker.deleteLater()
         self._set_busy(False)
 
-        if ok:
-            self.login_succeeded.emit(self.username.text().strip(), self.role)
+        if self._closing:
+            self.close()
+            return
+        if isinstance(result, Session):
+            if self.remember.isChecked():
+                self._settings.setValue(f"{self.role}/username", result.profile.username)
+            else:
+                self._settings.remove(f"{self.role}/username")
+            self.password.clear()
+            self.login_succeeded.emit(result)
+        elif isinstance(result, Profile):
+            self._apply_role(USER)
+            self.username.setText(result.username)
+            self.error_label.setText("Account created. Sign in with your new password.")
+            self.password.setFocus()
         else:
             self.error_label.setText(message)
             self._set_invalid(self.password, True)
@@ -473,44 +490,90 @@ class LoginWindow(QWidget):
             self.password.setFocus()
 
     def _on_forgot(self):
-        self.error_label.setText("Password reset not set up yet (?)")
+        self.error_label.setText("Password reset is not available yet. Contact your administrator.")
 
     def _on_signup(self):
-        self.error_label.setText("Sign-up not set up yet (?)")
+        if self._worker is not None:
+            return
+        if self._registering:
+            self._apply_role(USER)
+            return
+        self._registering = True
+        self.title.setText("Join the kitchen")
+        self.subtitle.setText("Create your Kitchen Quest account")
+        self.login_btn.setText("Create account")
+        self.signup.setText("Back to sign in")
+        self.password.clear()
+        self._clear_error()
+        self.username.setFocus()
 
     def closeEvent(self, event):
         if self._worker is not None:
-            self._worker.wait(2000)
+            self._closing = True
+            self.error_label.setText("Finishing the current request before closing...")
+            event.ignore()
+            return
         super().closeEvent(event)
 
-# temporary user window to show login success
 class UserWindow(QMainWindow):
-    def __init__(self, username: str):
+    signed_out = Signal()
+
+    def __init__(self, session: Session):
         super().__init__()
         self.setWindowTitle("Kitchen")
         self.resize(700, 450)
         self.setStyleSheet(PAGE_STYLE)
-        label = QLabel(f"Hello, {username}!")
+        self.session = session
+        page = QWidget()
+        page.setObjectName("page")
+        layout = QVBoxLayout(page)
+        label = QLabel(f"Hello, {session.profile.username}!")
+        label.setTextFormat(Qt.TextFormat.PlainText)
         label.setObjectName("welcome")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setCentralWidget(label)
+        layout.addWidget(label)
+        profile = QLabel(f"Signed in successfully\nAccount ID: {session.profile.id}\nRole: {session.profile.role}")
+        profile.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(profile)
+        signout = QPushButton("Sign out")
+        signout.clicked.connect(self._sign_out)
+        layout.addWidget(signout)
+        self.setCentralWidget(page)
+
+    def _sign_out(self):
+        self.session = None
+        self.signed_out.emit()
+        self.close()
+
+    def closeEvent(self, event):
+        self.session = None
+        super().closeEvent(event)
 
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    login = LoginWindow()
+    try:
+        login = LoginWindow()
+    except ApiError as exc:
+        QMessageBox.critical(None, "Kitchen Quest server settings", str(exc))
+        return 1
     windows = {}
 
-    def open_main(username: str):
-        windows["main"] = UserWindow(username)
+    def show_login():
+        login._apply_role(login.role)
+        login.show()
+
+    def open_main(session: Session):
+        windows["main"] = UserWindow(session)
+        windows["main"].signed_out.connect(show_login)
         windows["main"].show()
         login.close()
 
     login.login_succeeded.connect(open_main)
     login.show()
-    sys.exit(app.exec())
+    return app.exec()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
