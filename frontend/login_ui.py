@@ -4,8 +4,10 @@ import sys
 
 if __package__:
     from .api_client import ApiClient, ApiError, Profile, Session
+    from .kitchen_ui import CookingStationWidget, KitchenHubWidget
 else:
     from api_client import ApiClient, ApiError, Profile, Session
+    from kitchen_ui import CookingStationWidget, KitchenHubWidget
 
 from PySide6.QtCore import Qt, QSettings, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
@@ -22,6 +24,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -518,27 +521,54 @@ class LoginWindow(QWidget):
 class UserWindow(QMainWindow):
     signed_out = Signal()
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, client: ApiClient | None = None):
         super().__init__()
-        self.setWindowTitle("Kitchen")
-        self.resize(700, 450)
+        self.setWindowTitle("Kitchen Quest — Chef's Counter")
+        self.resize(960, 720)
         self.setStyleSheet(PAGE_STYLE)
         self.session = session
-        page = QWidget()
-        page.setObjectName("page")
-        layout = QVBoxLayout(page)
-        label = QLabel(f"Hello, {session.profile.username}!")
-        label.setTextFormat(Qt.TextFormat.PlainText)
-        label.setObjectName("welcome")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(label)
-        profile = QLabel(f"Signed in successfully\nAccount ID: {session.profile.id}\nRole: {session.profile.role}")
-        profile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(profile)
-        signout = QPushButton("Sign out")
-        signout.clicked.connect(self._sign_out)
-        layout.addWidget(signout)
-        self.setCentralWidget(page)
+        self.client = client or ApiClient()
+
+        self.stack = QStackedWidget()
+        self.hub = KitchenHubWidget(
+            username=session.profile.username,
+            user_id=session.profile.id,
+            api_client=self.client,
+            token=session.access_token,
+        )
+        self.hub.challenge_selected.connect(self._start_cooking)
+        self.hub.signout_requested.connect(self._sign_out)
+        self.stack.addWidget(self.hub)
+        self.setCentralWidget(self.stack)
+
+    def _start_cooking(self, challenge):
+        station_widget = CookingStationWidget(challenge)
+        station_widget.cooking_finished.connect(lambda res: self._on_cooking_done(challenge.id, res))
+        station_widget.back_to_hub_requested.connect(self._return_to_hub)
+        self.stack.addWidget(station_widget)
+        self.stack.setCurrentWidget(station_widget)
+
+    def _on_cooking_done(self, challenge_id: int, result):
+        if self.session and self.client:
+            try:
+                actions = [a.to_dict() for a in getattr(result, "action_history", [])]
+                self.client.submit_attempt(
+                    challenge_id=challenge_id,
+                    actions_data=actions,
+                    time_taken_seconds=result.time_taken_seconds,
+                    token=self.session.access_token,
+                )
+            except Exception:
+                pass
+        self._return_to_hub()
+
+    def _return_to_hub(self):
+        cur = self.stack.currentWidget()
+        if cur != self.hub:
+            self.stack.removeWidget(cur)
+            cur.deleteLater()
+        self.hub.refresh_progress()
+        self.stack.setCurrentWidget(self.hub)
 
     def _sign_out(self):
         self.session = None
@@ -565,7 +595,7 @@ def main():
         login.show()
 
     def open_main(session: Session):
-        windows["main"] = UserWindow(session)
+        windows["main"] = UserWindow(session, login.client)
         windows["main"].signed_out.connect(show_login)
         windows["main"].show()
         login.close()
