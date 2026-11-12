@@ -275,7 +275,7 @@ class CookingStationWidget(QWidget):
             ("Move to Bowl", Station.MIXING),
             ("Add to Pan", Station.STOVE),
             ("Transfer to Plate", Station.PLATING),
-            ("↩ Return to Pantry", Station.PANTRY),
+            ("Return to Pantry", Station.PANTRY),
         )
         for idx, (label, station) in enumerate(move_buttons):
             b = QPushButton(label)
@@ -949,6 +949,20 @@ class KitchenHubWidget(QWidget):
         return card
 
     def _start_challenge(self, challenge_id: int):
-        c = get_challenge_by_id(challenge_id)
+        if self.api_client:
+            try:
+                data = self.api_client.get_challenge(challenge_id, self.token)
+                c = RecipeChallenge.from_dict(data) if data else None
+            except ApiError as exc:
+                self.status_lbl.setText(f"Could not load this challenge: {exc}")
+                self.status_lbl.show()
+                return
+            except (KeyError, ValueError, TypeError):
+                self.status_lbl.setText("This challenge has invalid data and cannot be started.")
+                self.status_lbl.show()
+                return
+        else:
+            c = get_challenge_by_id(challenge_id)
         if c:
+            self.status_lbl.hide()
             self.challenge_selected.emit(c)

@@ -1,7 +1,9 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from .models import Role
+
+Difficulty = Literal["Beginner", "Intermediate", "Advanced"]
 
 
 class IngredientCreate(BaseModel):
@@ -75,6 +77,7 @@ class ChallengeOut(BaseModel):
     title: str
     description: str | None = None
     difficulty: str = "Beginner"
+    servings: int = 1
     base_xp: int = 100
     time_limit_seconds: int = 120
     chef_tip: str | None = None
@@ -82,6 +85,32 @@ class ChallengeOut(BaseModel):
     steps: list[dict[str, Any]] = Field(default_factory=list)
     best_stars: int = 0
     best_score: float = 0.0
+
+
+class ChallengeCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = None
+    difficulty: Difficulty = "Beginner"
+    servings: int = Field(default=1, ge=1)
+    base_xp: int = Field(default=100, ge=1)
+    time_limit_seconds: int = Field(default=120, ge=1)
+    chef_tip: str | None = None
+    recipe_id: int | None = None
+    ingredients: list[dict[str, Any]] = Field(min_length=1)
+    steps: list[dict[str, Any]] = Field(min_length=1)
+
+
+class ChallengeUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    difficulty: Difficulty | None = None
+    servings: int | None = Field(default=None, ge=1)
+    base_xp: int | None = Field(default=None, ge=1)
+    time_limit_seconds: int | None = Field(default=None, ge=1)
+    chef_tip: str | None = None
+    recipe_id: int | None = None
+    ingredients: list[dict[str, Any]] | None = Field(default=None, min_length=1)
+    steps: list[dict[str, Any]] | None = Field(default=None, min_length=1)
 
 
 class PlayerActionIn(BaseModel):
