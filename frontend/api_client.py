@@ -43,7 +43,7 @@ class ApiClient:
         self.timeout = timeout
         self.local_service = LocalGameService()
 
-    def _request(self, method, path, *, body=None, content_type=None, token=None) -> Any:
+    def _request(self, method, path, *, body=None, content_type=None, token=None, allow_empty=False) -> Any:
         headers = {"Accept": "application/json"}
         if content_type:
             headers["Content-Type"] = content_type
@@ -52,7 +52,10 @@ class ApiClient:
         request = Request(self.base_url + path, data=body, headers=headers, method=method)
         try:
             with urlopen(request, timeout=self.timeout) as response:
-                result = json.load(response)
+                raw = response.read()
+            if allow_empty and not raw:
+                return {}
+            result = json.loads(raw)
         except HTTPError as exc:
             messages = {
                 401: "Incorrect username or password." if path.endswith("/login") else "Your session has expired. Please sign in again.",
@@ -60,6 +63,12 @@ class ApiClient:
                 409: "That username is already taken. Choose another username.",
                 422: "Check your entries. Usernames must be 3-50 characters and passwords 8-128 characters.",
             }
+            if path.startswith("/api/challenges"):
+                messages.update({
+                    404: "That challenge was not found.",
+                    409: "A challenge with this title already exists.",
+                    422: "The server rejected the challenge data. Check the fields and try again.",
+                })
             with exc:
                 message = messages.get(exc.code, f"The server could not complete the request (HTTP {exc.code}). Please try again.")
             raise ApiError(message) from None
@@ -130,6 +139,28 @@ class ApiClient:
                 raise ApiError("The server returned an unexpected response. Please try again.")
             return res
         return self.local_service.get_challenge(challenge_id)
+
+    def create_challenge(self, data: dict[str, Any], token: str) -> dict[str, Any]:
+        """Admin only: create a challenge."""
+        return self._request(
+            "POST", "/api/challenges",
+            body=json.dumps(data).encode("utf-8"),
+            content_type="application/json",
+            token=token,
+        )
+
+    def update_challenge(self, challenge_id: int, data: dict[str, Any], token: str) -> dict[str, Any]:
+        """Admin only: update the given fields of a challenge."""
+        return self._request(
+            "PUT", f"/api/challenges/{challenge_id}",
+            body=json.dumps(data).encode("utf-8"),
+            content_type="application/json",
+            token=token,
+        )
+
+    def delete_challenge(self, challenge_id: int, token: str) -> None:
+        """Admin only: delete a challenge and all attempts recorded for it."""
+        self._request("DELETE", f"/api/challenges/{challenge_id}", token=token, allow_empty=True)
 
     def submit_attempt(
         self,
