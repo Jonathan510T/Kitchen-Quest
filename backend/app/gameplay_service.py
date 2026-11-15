@@ -1,9 +1,9 @@
-"""Backend gameplay evaluation, attempt persistence, and challenge seeding."""
-
 from datetime import datetime, timezone
 import json
+from typing import Any
 
-from sqlalchemy import func, select
+from fastapi import HTTPException
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from gameplay.engine import CookingEvaluator
@@ -18,6 +18,18 @@ from gameplay.models import (
 from gameplay.recipes import get_default_challenges
 
 from . import models, schemas
+
+
+def sync_challenge_id_sequence(db: Session) -> None:
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    db.execute(
+        text(
+            "SELECT setval(pg_get_serial_sequence('challenges', 'id'), "
+            "COALESCE((SELECT MAX(id) FROM challenges), 0) + 1, false)"
+        )
+    )
+    db.commit()
 
 
 def seed_default_challenges(db: Session) -> None:
@@ -38,6 +50,7 @@ def seed_default_challenges(db: Session) -> None:
             title=c.title,
             description=c.description,
             difficulty=c.difficulty,
+            servings=c.servings,
             base_xp=c.base_xp,
             time_limit_seconds=c.time_limit_seconds,
             chef_tip=c.chef_tip,
@@ -46,6 +59,7 @@ def seed_default_challenges(db: Session) -> None:
         )
         db.add(db_challenge)
     db.commit()
+    sync_challenge_id_sequence(db)
 
 
 def get_user_progress(db: Session, user_id: int) -> models.UserProgress:
@@ -82,6 +96,7 @@ def challenge_to_schema(
         title=challenge.title,
         description=challenge.description,
         difficulty=challenge.difficulty,
+        servings=challenge.servings,
         base_xp=challenge.base_xp,
         time_limit_seconds=challenge.time_limit_seconds,
         chef_tip=challenge.chef_tip,
@@ -90,6 +105,118 @@ def challenge_to_schema(
         best_stars=best.best_stars if best else 0,
         best_score=float(best.best_score) if best else 0.0,
     )
+
+
+def _invalid(detail: str) -> HTTPException:
+    return HTTPException(status_code=422, detail=detail)
+
+
+def _clean_title(title: str) -> str:
+    title = title.strip()
+    if not title:
+        raise _invalid("Title cannot be blank")
+    return title
+
+
+def _ensure_unique_title(db: Session, title: str, exclude_id: int | None = None) -> None:
+    stmt = select(models.Challenge.id).where(func.lower(models.Challenge.title) == title.lower())
+    if exclude_id is not None:
+        stmt = stmt.where(models.Challenge.id != exclude_id)
+    if db.scalar(stmt) is not None:
+        raise HTTPException(status_code=409, detail="A challenge with this title already exists")
+
+
+def _ensure_recipe_exists(db: Session, recipe_id: int | None) -> None:
+    if recipe_id is not None and db.get(models.Recipe, recipe_id) is None:
+        raise _invalid("Linked recipe does not exist")
+
+
+def _validate_content(
+    ingredients: list[dict[str, Any]], steps: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    try:
+        items = [IngredientItem.from_dict(i) for i in ingredients]
+        parsed = [CookingStep.from_dict(s) for s in steps]
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        raise _invalid(f"Invalid ingredient or step data: {exc}") from None
+
+    ids = [i.id for i in items]
+    if len(ids) != len(set(ids)):
+        raise _invalid("Ingredient ids must be unique")
+    numbers = [s.step_number for s in parsed]
+    if len(numbers) != len(set(numbers)):
+        raise _invalid("Step numbers must be unique")
+
+    names = {i.name.lower() for i in items}
+    for step in parsed:
+        unknown = [n for n in step.target_ingredients if n.lower() not in names]
+        if unknown:
+            raise _invalid(f"Step {step.step_number} targets unknown ingredients: {', '.join(unknown)}")
+        if step.required_clicks < 1 or step.target_duration < 0 or step.duration_tolerance < 0:
+            raise _invalid(f"Step {step.step_number} has invalid clicks or durations")
+
+    return [i.to_dict() for i in items], [s.to_dict() for s in parsed]
+
+
+def create_challenge(payload: schemas.ChallengeCreate, db: Session) -> models.Challenge:
+    title = _clean_title(payload.title)
+    _ensure_unique_title(db, title)
+    _ensure_recipe_exists(db, payload.recipe_id)
+    ingredients, steps = _validate_content(payload.ingredients, payload.steps)
+
+    challenge = models.Challenge(
+        recipe_id=payload.recipe_id,
+        title=title,
+        description=payload.description,
+        difficulty=payload.difficulty,
+        servings=payload.servings,
+        base_xp=payload.base_xp,
+        time_limit_seconds=payload.time_limit_seconds,
+        chef_tip=payload.chef_tip,
+        ingredients_json=json.dumps(ingredients),
+        steps_json=json.dumps(steps),
+    )
+    db.add(challenge)
+    db.commit()
+    db.refresh(challenge)
+    return challenge
+
+
+def update_challenge(
+    challenge: models.Challenge, payload: schemas.ChallengeUpdate, db: Session
+) -> models.Challenge:
+    changes = payload.model_dump(exclude_unset=True)
+
+    for field in ("title", "difficulty", "servings", "base_xp", "time_limit_seconds", "ingredients", "steps"):
+        if field in changes and changes[field] is None:
+            raise _invalid(f"{field} cannot be null")
+
+    if "title" in changes:
+        changes["title"] = _clean_title(changes["title"])
+        _ensure_unique_title(db, changes["title"], exclude_id=challenge.id)
+    if "recipe_id" in changes:
+        _ensure_recipe_exists(db, changes["recipe_id"])
+
+    if "ingredients" in changes or "steps" in changes:
+        ingredients = (
+            changes.pop("ingredients") if "ingredients" in changes
+            else json.loads(challenge.ingredients_json)
+        )
+        steps = changes.pop("steps") if "steps" in changes else json.loads(challenge.steps_json)
+        ingredients, steps = _validate_content(ingredients, steps)
+        changes["ingredients_json"] = json.dumps(ingredients)
+        changes["steps_json"] = json.dumps(steps)
+
+    for key, value in changes.items():
+        setattr(challenge, key, value)
+    db.commit()
+    db.refresh(challenge)
+    return challenge
+
+
+def delete_challenge(challenge: models.Challenge, db: Session) -> None:
+    db.delete(challenge)
+    db.commit()
 
 
 def update_challenge_progress(
@@ -142,7 +269,7 @@ def process_attempt(
         title=challenge.title,
         description=challenge.description or "",
         difficulty=challenge.difficulty,
-        servings=1,
+        servings=challenge.servings,
         base_xp=challenge.base_xp,
         time_limit_seconds=challenge.time_limit_seconds,
         chef_tip=challenge.chef_tip or "",

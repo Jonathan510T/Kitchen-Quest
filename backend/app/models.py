@@ -33,7 +33,8 @@ class Recipe(Base):
     )
     challenges: Mapped[list["Challenge"]] = relationship(
         back_populates="recipe",
-        cascade="all, delete-orphan",
+        cascade="save-update, merge",
+        passive_deletes=True,
     )
 
 
@@ -91,6 +92,7 @@ class Challenge(Base):
     title: Mapped[str] = mapped_column(String(200), index=True)
     description: Mapped[str | None] = mapped_column(Text)
     difficulty: Mapped[str] = mapped_column(String(30), default="Beginner")
+    servings: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     base_xp: Mapped[int] = mapped_column(Integer, default=100)
     time_limit_seconds: Mapped[int] = mapped_column(Integer, default=120)
     chef_tip: Mapped[str | None] = mapped_column(Text)

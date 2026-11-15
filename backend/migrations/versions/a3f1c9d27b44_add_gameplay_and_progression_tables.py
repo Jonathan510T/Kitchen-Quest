@@ -2,12 +2,6 @@
 
 Creates challenges, attempts, user_progress and challenge_progress.
 
-The first three were previously created by Base.metadata.create_all() in
-main.py and never had a migration, so a developer database may already contain
-them. Each table is therefore only created when it is missing, and
-attempts.created_at is only converted when it is still a string column.
-challenge_progress is backfilled from existing attempts.
-
 Revision ID: a3f1c9d27b44
 Revises: 58ee3321c7ba
 Create Date: 2026-11-04 16:40:00.000000
@@ -27,12 +21,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def _convert_created_at_portable(bind) -> None:
-    """String -> DateTime for non-PostgreSQL databases (e.g. the SQLite fallback).
-
-    A batch ALTER on SQLite rebuilds the table with CAST(created_at AS DATETIME),
-    which turns '2026-10-21T10:00:00+00:00' into the integer 2026 and destroys the
-    data. Parse the text in Python into a new column instead, then swap it in.
-    """
     from datetime import datetime, timezone
 
     with op.batch_alter_table('attempts') as batch:
@@ -191,6 +179,3 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_challenge_progress_user_id'), table_name='challenge_progress')
     op.drop_index(op.f('ix_challenge_progress_challenge_id'), table_name='challenge_progress')
     op.drop_table('challenge_progress')
-    # user_progress, attempts and challenges are left in place: they pre-date
-    # this migration on databases built with create_all(), so dropping them
-    # here would destroy data this revision did not create.

@@ -120,6 +120,44 @@ def get_challenge(
     return gameplay_service.challenge_to_schema(challenge, current_user.id, db)
 
 
+@app.post("/api/challenges", response_model=schemas.ChallengeOut, status_code=201)
+def create_challenge(
+    payload: schemas.ChallengeCreate,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(require_admin),
+):
+    gameplay_service.seed_default_challenges(db)
+    challenge = gameplay_service.create_challenge(payload, db)
+    return gameplay_service.challenge_to_schema(challenge, admin.id, db)
+
+
+@app.put("/api/challenges/{challenge_id}", response_model=schemas.ChallengeOut)
+def update_challenge(
+    challenge_id: int,
+    payload: schemas.ChallengeUpdate,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(require_admin),
+):
+    gameplay_service.seed_default_challenges(db)
+    challenge = db.get(models.Challenge, challenge_id)
+    if challenge is None:
+        raise HTTPException(status_code=404, detail="Cooking challenge not found")
+    gameplay_service.update_challenge(challenge, payload, db)
+    return gameplay_service.challenge_to_schema(challenge, admin.id, db)
+
+
+@app.delete("/api/challenges/{challenge_id}", status_code=204)
+def delete_challenge(
+    challenge_id: int,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(require_admin),
+):
+    challenge = db.get(models.Challenge, challenge_id)
+    if challenge is None:
+        raise HTTPException(status_code=404, detail="Cooking challenge not found")
+    gameplay_service.delete_challenge(challenge, db)
+
+
 @app.post("/api/challenges/{challenge_id}/attempts", response_model=schemas.AttemptOut)
 def submit_challenge_attempt(
     challenge_id: int,
