@@ -1,0 +1,37 @@
+name: SonarQube Cloud Analysis
+
+on:
+  push:
+    branches:
+      - KIT-1-test-jira-integration
+      - gameplay-logic
+      - main
+  pull_request:
+    branches:
+      - KIT-1-test-jira-integration
+      - gameplay-logic
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sonarcloud:
+    name: SonarQube Cloud Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v8.4.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
